@@ -1,396 +1,398 @@
 import javafx.application.Application
 import javafx.geometry.Insets
-import javafx.scene.Scene
 import javafx.scene.canvas.Canvas
 import javafx.scene.control.*
 import javafx.scene.layout.*
 import javafx.scene.paint.Color
 import javafx.stage.Stage
 import javafx.animation.AnimationTimer
-import javafx.scene.canvas.GraphicsContext
+import javafx.geometry.Pos
+import javafx.scene.*
+import javafx.scene.image.Image
+import javafx.scene.image.ImageView
+import javafx.scene.shape.Circle
+import javafx.scene.shape.Rectangle
 import javafx.scene.text.Text
 import kotlin.math.*
+import utils.*
+import kotlin.reflect.KMutableProperty1
 
 const val G = 6.6740831e-11
 
-data class Body(
-    var x: Double,
-    var y: Double,
-    var mass: Double,
-    var velocityX: Double = 0.0,
-    var velocityY: Double = 0.0,
-    val color: Color,
-    var accelerationX: Double = 0.0,
-    var accelerationY: Double = 0.0,
-) {
-    val trajectory = mutableListOf<Pair<Double, Double>>()
-
-    fun addToTrajectory() {
-        if (trajectory.size > 0 &&
-            sqrt((trajectory.last().first - x).pow(2) + (trajectory.last().second - y).pow(2)) < 5) return
-        trajectory.add(Pair(x, y))
-        if (trajectory.size > 1000) {
-            trajectory.removeAt(0)
-        }
-    }
-}
-
-enum class BodiesPreset(val bodies: List<Body>, val displayName: String) {
-    TWO_SIMILAR(
-        listOf(
-            Body(200.0, 200.0, 5000.0, 15.0, 20.0, Color.RED),
-            Body(400.0, 200.0, 5000.0, -15.0, -15.0, Color.BLUE)
-        ),
-        "Dwa podobne ciała"
-    ),
-    ONE_BIG_ONE_SMALL(
-        listOf(
-            Body(200.0, 200.0, 5000.0, 0.0, 1.0, Color.RED),
-            Body(400.0, 200.0, 0.001, -20.0, -20.0, Color.BLUE)
-        ),
-        "Duże i małe ciało"
-    ),
-    THREE_SIMILAR(
-        listOf(
-            Body(
-                -0.97000436 * (200) + 300, 0.24308753 * (200) + 250,
-                2000.0,
-                0.466203685 * 25.83424684406, 0.43236573 * 25.83424684406,
-                Color.RED
-            ),
-            Body(
-                0.0 * (200) + 300, 0.0 * (200) + 250,
-                2000.0,
-                -0.93240737 * 25.83424684406, -0.86473146 * 25.83424684406,
-                Color.BLUE
-            ),
-            Body(
-                0.97000436 * (200) + 300, -0.24308753 * (200) + 250,
-                2000.0,
-                0.466203685 * 25.83424684406, 0.43236573 * 25.83424684406,
-                Color.GREEN
-            )
-        ),
-        "Trzy podobne ciała"
-    ),
-    ONE_BIG_TWO_SMALL(
-        listOf(
-            Body(200.0, 200.0, 5000.0, 0.0, 1.0, Color.RED),
-            Body(400.0, 200.0, 0.001, -25.0, -25.0, Color.BLUE),
-            Body(300.0, 373.20508075689, 0.001, 25.0, -25.0, Color.GREEN)
-        ),
-        "Duże i dwa małe ciała"
-    )
-}
-
 class BodySimulator : Application() {
+    private var is3D = false
     private var bodyCount = 2
     private var simulationSpeed = 1.0
     private var isLightTheme = false
 
     private var isRunning = false
-    private var lastTime = 0L
+    private var lastFrameTime = 0L
 
-    private var preset = BodiesPreset.TWO_SIMILAR
-    private var bodies = preset.bodies.map { it.copy() }.toMutableList()
+    private var currentPreset2D = BodiesPreset2D.TWO_SIMILAR
+    private var bodies2D = currentPreset2D.bodies.map { it.copy() }.toMutableList()
+
+    private var currentPreset3D = BodiesPreset3D.TWO_SIMILAR
+    private var bodies3D = currentPreset3D.bodies.map { it.copy() }.toMutableList()
 
     // Elements that need to be modified not only with user input (like for resetting):
     private lateinit var canvas: Canvas
     private lateinit var startStopButton: Button
     private lateinit var speedSlider: Slider
-    private lateinit var bodyCountBox: ComboBox<String>
-    private lateinit var bodiesVBox: VBox
-    private lateinit var scrollPane: ScrollPane
+    private lateinit var dimensionCombo: ComboBox<String>
+    private lateinit var bodyCountCombo: ComboBox<String>
+    private lateinit var bodyInfoVBox: VBox
 
-    private val bodyFields = mutableListOf<List<TextField>>()
-
+    private lateinit var renderer3D: Renderer3D
     private lateinit var timer: AnimationTimer
 
     override fun start(stage: Stage) {
 
         val borderPane = BorderPane()
+        stage.apply {
+            title = "Symulator Grawitacji"
+            scene = Scene(borderPane, 1000.0, 610.0)
+            icons.add(Image(javaClass.getResourceAsStream("/icons/m3/app_icon.png")))
+        }
 
-        // Simulation space:
-        canvas = Canvas(600.0, 600.0)
-        val canvasPane = StackPane(canvas)
-        canvasPane.style = "-fx-background-color: black;"
+        //=== ANIMATION SPACE ==========================================================================================
+
+        canvas = Canvas(600.0, 620.0)
+        val canvasPane = StackPane(canvas).apply { style = "-fx-background-color: black;" }
         borderPane.right = canvasPane
 
-        // Control bar on the left:
-        val controlsVBox = VBox(10.0)
-        controlsVBox.padding = Insets(10.0)
-        controlsVBox.prefWidth = 350.0
-
-        // Buttons:
-        val buttonBar = HBox(10.0)
-        startStopButton = Button("Start")
-        val resetButton = Button("Reset")
-
-        startStopButton.setOnAction {
-            if (isRunning) {
-                pauseAnimation()
-            } else {
-                startAnimation()
-            }
+        // 3D
+        val root3D = Group()
+        val camera3D = PerspectiveCamera(true).apply {
+            nearClip = 0.1
+            farClip = 10000.0
+            fieldOfView = 45.0
         }
-        resetButton.setOnAction {
-            resetSimulation()
+        val scene3D = SubScene(root3D, 600.0, 600.0, true, SceneAntialiasing.BALANCED).apply {
+            fill = Color.BLACK
+            camera = camera3D
+            widthProperty().bind(canvasPane.widthProperty())
+            heightProperty().bind(canvasPane.heightProperty())
         }
 
-        // Body count:
-        bodyCountBox = ComboBox<String>()
-        bodyCountBox.items.addAll("2 Ciała", "3 Ciała")
-        bodyCountBox.value = "2 Ciała"
+        renderer3D = Renderer3D(scene3D, camera3D, bodyRadius = 10.0)
 
-        bodyCountBox.valueProperty().addListener { _, _, newValue ->
-            if (newValue == "2 Ciała" && bodyCount == 3) {
-                bodies.removeLast()
-                bodyCount = 2
-                drawBodies()
-            } else if (newValue == "3 Ciała" && bodyCount == 2) {
-                val thirdBody = preset.bodies.getOrNull(2)
-                    ?: BodiesPreset.ONE_BIG_TWO_SMALL.bodies[2].copy(mass = 5000.0)
-                bodies.add(thirdBody)
-                bodyCount = 3
-                drawBodies()
-            }
-            updateBodyControls()
+
+        //=== CONTROLS =================================================================================================
+
+        val controlsVBox = VBox(10.0).apply {
+            padding = Insets(10.0)
+            prefWidth = 400.0
         }
-
-        // Color theme:
-        val themeComboBox = ComboBox<String>()
-        themeComboBox.items.addAll("Czarne tło", "Białe tło")
-        themeComboBox.value = "Czarne tło"
-
-        themeComboBox.valueProperty().addListener { _, _, newValue ->
-            if (newValue == "Czarne tło" && isLightTheme || newValue == "Białe tło" && !isLightTheme) {
-                isLightTheme = !isLightTheme
-            }
-            drawBodies()
-        }
-
-        buttonBar.children.addAll(startStopButton, resetButton, bodyCountBox, themeComboBox)
-
-        // Simulation speed slider:
-        val speedSliderContainer = HBox(10.0)
-        val speedSliderLabel = Text("Szybkość symulacji:")
-        speedSlider = Slider(0.1, 10.0, 1.0)
-        speedSlider.prefWidth = 300.0
-        speedSlider.isShowTickLabels = true
-        speedSlider.isShowTickMarks = true
-        speedSlider.majorTickUnit = 1.0
-        speedSlider.blockIncrement = 0.25
-        speedSlider.valueProperty().addListener { _, _, newValue ->
-            simulationSpeed = (newValue.toDouble() * 4).roundToInt() / 4.0
-        }
-        speedSliderContainer.children.addAll(speedSliderLabel, speedSlider)
-
-        // Preset choice:
-        val presetComboBoxContainer = HBox(10.0)
-        val presetComboBoxLabel = Text("Zagadnienia:")
-        val presetComboBox = ComboBox<String>()
-        presetComboBox.items.addAll(BodiesPreset.entries.map { it.displayName })
-        presetComboBox.value = preset.displayName
-
-        presetComboBox.valueProperty().addListener { _, _, newValue ->
-            preset = BodiesPreset.entries.first { it.displayName == newValue }
-            bodies.clear()
-            bodies.addAll(preset.bodies.map { it.copy() })
-            bodyCount = preset.bodies.size
-            bodyCountBox.value = "$bodyCount Ciała"
-            updateBodyControls()
-            drawBodies()
-        }
-
-        presetComboBoxContainer.children.addAll(presetComboBoxLabel, presetComboBox)
-        controlsVBox.children.addAll(buttonBar, speedSliderContainer, presetComboBoxContainer)
-
-        // Body info:
-        bodiesVBox = VBox(10.0)
-        scrollPane = ScrollPane(bodiesVBox)
-        scrollPane.isFitToWidth = true
-        controlsVBox.children.add(scrollPane)
-        VBox.setVgrow(scrollPane, Priority.ALWAYS)
-
         borderPane.left = controlsVBox
 
-        updateBodyControls()
-        drawBodies()
+        // First control row:
+        val firstControlRow = HBox(10.0)
+        startStopButton = Button().apply {
+            graphic = ImageView(Image(javaClass.getResourceAsStream("/icons/m3/start.png")))
+            padding = Insets(0.0)
+            shape = Circle(20.0)
+            tooltip = Tooltip("Start")
+            setOnAction {
+                if (isRunning) pauseAnimation()
+                else startAnimation()
+            }
+        }
+        val resetButton = Button().apply {
+            graphic = ImageView(Image(javaClass.getResourceAsStream("/icons/m3/reset.png")))
+            padding = Insets(0.0)
+            shape = Circle(20.0)
+            tooltip = Tooltip("Reset")
+            setOnAction { resetSimulation() }
+        }
+        val buttonContainer = HBox().apply {
+            children.addAll(startStopButton, resetButton)
+            spacing = 4.0
+        }
+        val ovalBorder = Rectangle(84.0, 40.0).apply {
+            arcWidth = 40.0
+            arcHeight = 84.0
+            fill = Color.TRANSPARENT
+            stroke = Color.LIGHTGRAY
+        }
+        val buttonBar = StackPane().apply {
+            children.addAll(ovalBorder, buttonContainer)
+            alignment = Pos.TOP_LEFT
+        }
 
-        val scene = Scene(borderPane, 950.0, 610.0)
-        stage.title = "Symulator Grawitacji"
-        stage.scene = scene
+        dimensionCombo = ComboBox<String>().apply {
+            items.addAll("2D", "3D")
+            value = "2D"
+            valueProperty().addListener { _, _, newValue ->
+                if (newValue == "3D" == is3D) return@addListener
+                is3D = newValue == "3D"
+                canvasPane.children.clear()
+                if (is3D) canvasPane.children.add(scene3D)
+                else canvasPane.children.add(canvas)
+                drawBodies()
+                updateBodyControls()
+            }
+        }
+
+        bodyCountCombo = ComboBox<String>().apply {
+            items.addAll("2 Ciała", "3 Ciała")
+            value = "2 Ciała"
+            valueProperty().addListener { _, _, newValue ->
+                if (newValue == "2 Ciała" && bodyCount == 3) {
+                    bodies2D.removeLast()
+                    bodies3D.removeLast()
+                    bodyCount = 2
+                    drawBodies()
+                } else if (newValue == "3 Ciała" && bodyCount == 2) {
+                    val thirdBody2D = currentPreset2D.bodies.getOrNull(2)?.copy()
+                        ?: BodiesPreset2D.ONE_BIG_TWO_SMALL.bodies[2].copy(mass = 5000.0)
+                    bodies2D.add(thirdBody2D)
+                    val thirdBody3D = currentPreset3D.bodies.getOrNull(2)?.copy()
+                        ?: BodiesPreset2D.ONE_BIG_TWO_SMALL.bodies[2].copy(mass = 5000.0)
+                    bodies3D.add(thirdBody3D)
+                    bodyCount = 3
+                    drawBodies()
+                }
+                updateBodyControls()
+            }
+        }
+
+        val themeCombo = ComboBox<String>().apply {
+            items.addAll("Czarne tło", "Białe tło")
+            value = "Czarne tło"
+            valueProperty().addListener { _, _, newValue ->
+                isLightTheme = newValue == "Białe tło"
+                renderer3D.isLightTheme = isLightTheme
+                drawBodies()
+            }
+        }
+
+        firstControlRow.apply {
+            children.addAll(buttonBar, dimensionCombo, bodyCountCombo, themeCombo)
+            alignment = Pos.CENTER_LEFT
+        }
+
+        // Second control row (speed slider):
+        val secondControlRow = HBox(10.0)
+        val speedSliderLabel = Text("Szybkość symulacji:")
+        speedSlider = Slider(0.1, 10.0, 1.0).apply {
+            prefWidth = 300.0
+            isShowTickLabels = true
+            isShowTickMarks = true
+            majorTickUnit = 1.0
+            blockIncrement = 0.25
+            valueProperty().addListener { _, _, newValue ->
+                simulationSpeed = (newValue.toDouble() * 4).roundToInt() / 4.0
+            }
+        }
+        secondControlRow.children.addAll(speedSliderLabel, speedSlider)
+
+        // Third control row (preset choice):
+        val thirdControlRow = HBox(10.0)
+        val presetComboLabel = Text("Zagadnienia:")
+        val presetCombo = ComboBox<String>().apply {
+            items.addAll(BodiesPreset2D.entries.map { it.displayName })
+            value = currentPreset2D.displayName
+            valueProperty().addListener { _, _, newValue ->
+                currentPreset2D = BodiesPreset2D.entries.first { it.displayName == newValue }
+                bodies2D.clear()
+                bodies2D.addAll(currentPreset2D.bodies.map { it.copy() })
+                currentPreset3D = BodiesPreset3D.entries.first { it.displayName == newValue }
+                bodies3D.clear()
+                bodies3D.addAll(currentPreset3D.bodies.map { it.copy() })
+                bodyCount = currentPreset2D.bodies.size
+                bodyCountCombo.value = "$bodyCount Ciała"
+                updateBodyControls()
+                drawBodies()
+            }
+        }
+        thirdControlRow.children.addAll(presetComboLabel, presetCombo)
+
+        controlsVBox.children.addAll(firstControlRow, secondControlRow, thirdControlRow)
+
+        // Body info box (under the controls) scrolling when too long:
+        bodyInfoVBox = VBox(10.0)
+        val bodyInfoPane = ScrollPane(bodyInfoVBox).apply { isFitToWidth = true }
+        controlsVBox.children.add(bodyInfoPane)
+        VBox.setVgrow(bodyInfoPane, Priority.ALWAYS)
+
+        updateBodyControls()
+        drawBodies2D()
+
         stage.show()
+
+
+        //=== ANIMATION ================================================================================================
 
         timer = object : AnimationTimer() {
             override fun handle(now: Long) {
-                if (lastTime > 0) {
-                    val deltaTime: Double = (now - lastTime) * 1e-9 * simulationSpeed
+                if (lastFrameTime > 0) {
+                    val deltaTime: Double = (now - lastFrameTime) * 1e-9 * simulationSpeed
                     updateSimulation(deltaTime)
                     updateBodyControls()
                     drawBodies()
                 }
-                lastTime = now
+                lastFrameTime = now
             }
         }
     }
 
-    private fun updateBodyControls() {
-        bodiesVBox.children.clear()
-        bodyFields.clear()
+    private fun makeBodyInputField(
+        body: Body,
+        bodyProperty: KMutableProperty1<Body, Double>,
+        width: Double? = 60.0,
+        canBeNegative: Boolean = true,
+        canBeZero: Boolean = true,
+    ): TextField {
+        val propertyValue = bodyProperty.get(body)
+        return TextField(propertyValue.toString()).apply {
+            if (width != null) prefWidth = width
 
-        for (i in bodies.indices) {
-            val body = bodies[i]
+            textProperty().addListener { _, oldValue, newValue ->
+                val newValueDouble = newValue.toDoubleOrNull()
+                // Allow for writing more after the zero, but don't change the property value:
+                if (!canBeZero && newValueDouble == 0.0) return@addListener
+                bodyProperty.set(body,
+                    newValueDouble ?: oldValue.toDoubleOrNull() ?: propertyValue
+                )
+                // Invalid input:
+                if ((newValue.isNotEmpty()) && !(canBeNegative && newValue == "-") &&
+                        ((newValueDouble == null) || !(newValueDouble.isFinite())))
+                    text = oldValue
+                drawBodies()
+            }
+
+        }
+    }
+
+    private fun updateBodyControls() {
+        bodyInfoVBox.children.clear()
+
+        val bodies = if (is3D) bodies3D else bodies2D
+        for (bodyIndex in bodies.indices) {
+            val body = bodies[bodyIndex]
 
             val bodyContainer = VBox(5.0).apply {
                 padding = Insets(10.0)
-                style =
-                    "-fx-border-color: #${body.color.toString().substring(2, 8)};" +
-                            "-fx-border-width: 2px;" +
-                            "-fx-border-radius: 5px;" +
-                            "-fx-background-radius: 5px;" +
-                            "-fx-background-color: #f9f9f9;"
+                style = "-fx-border-color: #${body.color.toString().substring(2, 8)};" +
+                        "-fx-border-width: 2px;" +
+                        "-fx-border-radius: 5px;" +
+                        "-fx-background-radius: 5px;" +
+                        "-fx-background-color: #f9f9f9;"
             }
 
-            val title = Text("Ciało ${i + 1}")
-            title.style =
-                "-fx-font: 15px Montserrat;" +
+            val title = Text("Ciało ${bodyIndex + 1}").apply {
+                style = "-fx-font: 15px Montserrat;" +
                         "-fx-font-weight: bold;" +
                         "-fx-fill: #${body.color.toString().substring(2, 8)};" +
                         "-fx-stroke: #666666;" +
                         "-fx-stroke-width: 1;"
+            }
 
-            val grid = GridPane()
-            grid.hgap = 10.0
-            grid.vgap = 5.0
-            grid.padding = Insets(0.0, 0.0, 10.0, 0.0)
+            val contentGrid = GridPane().apply {
+                hgap = 10.0
+                vgap = 5.0
+                padding = Insets(0.0, 0.0, 10.0, 0.0)
+            }
 
             val labelStyle = "-fx-font-size: 12px; -fx-fill: black;"
 
             if (!isRunning) {
 
-                grid.add(Text("Masa:").apply { style = labelStyle }, 0, 0)
-                grid.add(Text("Pozycja (X, Y):").apply { style = labelStyle }, 0, 1)
-                grid.add(Text("Prędkość (X, Y):").apply { style = labelStyle }, 0, 2)
+                contentGrid.add(Text("Masa:").apply { style = labelStyle }, 0, 0)
+                contentGrid.add(Text("Pozycja:").apply { style = labelStyle }, 0, 1)
+                contentGrid.add(Text("Prędkość:").apply { style = labelStyle }, 0, 2)
 
-                val massField = TextField(body.mass.toString()).apply {
-                    textProperty().addListener { _, oldValue, newValue ->
-                        body.mass = newValue.toDoubleOrNull() ?: oldValue.toDoubleOrNull() ?: body.mass
-                        if (newValue.toDoubleOrNull() == null && newValue.isNotEmpty()) text = oldValue
-                        drawBodies()
-                    }
-                }
-                val xField = TextField(body.x.toString()).apply {
-                    prefWidth = 60.0
-                    textProperty().addListener { _, oldValue, newValue ->
-                        body.x = newValue.toDoubleOrNull() ?: oldValue.toDoubleOrNull() ?: body.x
-                        if (newValue.toDoubleOrNull() == null && newValue.isNotEmpty()) text = oldValue
-                        drawBodies()
-                    }
-                }
-                val yField = TextField(body.y.toString()).apply {
-                    prefWidth = 60.0
-                    textProperty().addListener { _, oldValue, newValue ->
-                        body.y = newValue.toDoubleOrNull() ?: oldValue.toDoubleOrNull() ?: body.y
-                        if (newValue.toDoubleOrNull() == null && newValue.isNotEmpty()) text = oldValue
-                        drawBodies()
-                    }
-                }
-                val velocityXField = TextField(body.velocityX.toString()).apply {
-                    prefWidth = 60.0
-                    textProperty().addListener { _, oldValue, newValue ->
-                        body.velocityX = newValue.toDoubleOrNull() ?: oldValue.toDoubleOrNull() ?: body.velocityX
-                        if (newValue.toDoubleOrNull() == null && newValue.isNotEmpty()
-                            && newValue != "-") text = oldValue
-                        drawBodies()
-                    }
-                }
-                val velocityYField = TextField(body.velocityY.toString()).apply {
-                    prefWidth = 60.0
-                    textProperty().addListener { _, oldValue, newValue ->
-                        body.velocityY = newValue.toDoubleOrNull() ?: oldValue.toDoubleOrNull() ?: body.velocityY
-                        if (newValue.toDoubleOrNull() == null && newValue.isNotEmpty()
-                            && newValue != "-") text = oldValue
-                        drawBodies()
-                    }
-                }
+                contentGrid.add(Text("X =").apply { style = labelStyle }, 1, 1)
+                contentGrid.add(Text("Y =").apply { style = labelStyle }, 3, 1)
+                contentGrid.add(Text("X =").apply { style = labelStyle }, 1, 2)
+                contentGrid.add(Text("Y =").apply { style = labelStyle }, 3, 2)
+                contentGrid.add(Text("[Pg]").apply { style = labelStyle }, if (is3D) 7 else 5, 0)
+                contentGrid.add(Text("[px]").apply { style = labelStyle }, if (is3D) 7 else 5, 1)
+                contentGrid.add(Text("[px/s]").apply { style = labelStyle }, if (is3D) 7 else 5, 2)
 
-                val fields = listOf(xField, yField, massField, velocityXField, velocityYField)
-                bodyFields.add(fields)
+                val massField = makeBodyInputField(
+                    body, Body::mass, width = null, canBeNegative = false, canBeZero = false
+                )
+                val xField = makeBodyInputField(body, Body::x)
+                val yField = makeBodyInputField(body, Body::y)
+                val velocityXField = makeBodyInputField(body, Body::velocityX)
+                val velocityYField = makeBodyInputField(body, Body::velocityY)
 
-                grid.add(massField, 1, 0, 3, 1)
-                grid.add(xField, 1, 1)
-                grid.add(yField, 3, 1)
-                grid.add(velocityXField, 1, 2)
-                grid.add(velocityYField, 3, 2)
+                contentGrid.add(massField, 1, 0, if (is3D) 6 else 4, 1)
+                contentGrid.add(xField, 2, 1)
+                contentGrid.add(yField, 4, 1)
+                contentGrid.add(velocityXField, 2, 2)
+                contentGrid.add(velocityYField, 4, 2)
 
-                grid.add(Text("[Pg]").apply { style = labelStyle }, 4, 0)
-                grid.add(Text("[px]").apply { style = labelStyle }, 2, 1)
-                grid.add(Text("[px]").apply { style = labelStyle }, 4, 1)
-                grid.add(Text("[px/s]").apply { style = labelStyle }, 2, 2)
-                grid.add(Text("[px/s]").apply { style = labelStyle }, 4, 2)
+                if (is3D) {
+                    val zField = makeBodyInputField(body, Body::z)
+                    val velocityZField = makeBodyInputField(body, Body::velocityZ)
+
+                    contentGrid.add(Text("Z =").apply { style = labelStyle }, 5, 1)
+                    contentGrid.add(Text("Z =").apply { style = labelStyle }, 5, 2)
+                    contentGrid.add(zField, 6, 1)
+                    contentGrid.add(velocityZField, 6, 2)
+                }
 
             } else {
 
-                grid.add(Text("Masa:").apply { style = labelStyle }, 0, 0)
-                grid.add(Text("Prędkość:").apply { style = labelStyle }, 0, 1)
-                grid.add(Text("Przyspieszenie:").apply { style = labelStyle }, 0, 2)
+                contentGrid.add(Text("Masa:").apply { style = labelStyle }, 0, 0)
+                contentGrid.add(Text("Prędkość:").apply { style = labelStyle }, 0, 1)
+                contentGrid.add(Text("Przyspieszenie:").apply { style = labelStyle }, 0, 2)
 
-                grid.add(Text(String.format("%.2f", body.mass)).apply { style = labelStyle }, 1, 0)
-                val totalVelocity = sqrt(body.velocityX.pow(2) + body.velocityY.pow(2))
-                grid.add(Text(String.format("%.2f", totalVelocity)).apply { style = labelStyle }, 1, 1)
-                val totalAcceleration = sqrt(body.accelerationX.pow(2) + body.accelerationY.pow(2))
-                grid.add(Text(String.format("%.2f", totalAcceleration)).apply { style = labelStyle }, 1, 2)
+                contentGrid.add(Text(String.format("%.2f", body.mass)).apply { style = labelStyle }, 1, 0)
+                val totalVelocity = sqrt(
+                    body.velocityX.pow(2) + body.velocityY.pow(2) + body.velocityZ.pow(2)
+                )
+                contentGrid.add(Text(String.format("%.2f", totalVelocity)).apply { style = labelStyle }, 1, 1)
+                val totalAcceleration = sqrt(
+                    body.accelerationX.pow(2) + body.accelerationY.pow(2) + body.accelerationZ.pow(2)
+                )
+                contentGrid.add(Text(String.format("%.2f", totalAcceleration)).apply { style = labelStyle }, 1, 2)
 
-                grid.add(Text("[Pg] = ${body.mass * 1e12} [kg]").apply { style = labelStyle }, 2, 0)
-                grid.add(Text("[m/s]   (1m = 1 pixel)").apply { style = labelStyle }, 2, 1)
-                grid.add(Text("[m/s^2]").apply { style = labelStyle }, 2, 2)
+                contentGrid.add(Text("[Pg] = ${body.mass * 1e12} [kg]").apply { style = labelStyle }, 2, 0)
+                contentGrid.add(Text("[m/s]   (1m = 1 pixel)").apply { style = labelStyle }, 2, 1)
+                contentGrid.add(Text("[m/s^2]").apply { style = labelStyle }, 2, 2)
 
             }
 
-            bodyContainer.children.addAll(title, grid)
-            bodiesVBox.children.add(bodyContainer)
+            bodyContainer.children.addAll(title, contentGrid)
+            bodyInfoVBox.children.add(bodyContainer)
 
         }
     }
 
     private fun startAnimation() {
-        for (i in bodies.indices) {
-            val fields = bodyFields[i]
-            val body = bodies[i]
-            val currentPreset = if (i < preset.bodies.size) preset
-            else BodiesPreset.ONE_BIG_TWO_SMALL.apply { bodies.last().mass = 5000.0 }
-
-            if (fields[0].text.isEmpty()) body.x = currentPreset.bodies[i].x
-            if (fields[1].text.isEmpty()) body.y = currentPreset.bodies[i].y
-            if (fields[2].text.isEmpty() || fields[2].text.toDouble() == 0.0) body.mass = currentPreset.bodies[i].mass
-            if (fields[3].text.isEmpty() || fields[3].text == "-") body.velocityX = currentPreset.bodies[i].velocityX
-            if (fields[4].text.isEmpty() || fields[4].text == "-") body.velocityY = currentPreset.bodies[i].velocityY
-        }
-
         isRunning = true
-        startStopButton.text = "Stop"
-        lastTime = 0
+        lastFrameTime = 0
         timer.start()
+        startStopButton.apply {
+            graphic = ImageView(Image(javaClass.getResourceAsStream("/icons/m3/stop.png")))
+            tooltip = Tooltip("Stop")
+        }
+        dimensionCombo.isDisable = true
         updateBodyControls()
     }
 
     private fun pauseAnimation() {
         isRunning = false
-        startStopButton.text = "Start"
         timer.stop()
+        startStopButton.apply {
+            graphic = ImageView(Image(javaClass.getResourceAsStream("/icons/m3/start.png")))
+            tooltip = Tooltip("Start")
+        }
+        dimensionCombo.isDisable = false
         updateBodyControls()
         drawBodies()
     }
 
     private fun resetSimulation() {
-        if (isRunning) {
-            pauseAnimation()
-        }
+        if (isRunning) pauseAnimation()
 
-        bodies = preset.bodies.map { it.copy() }.toMutableList()
-        bodyCount = preset.bodies.size
-        bodyCountBox.value = "$bodyCount Ciała"
+        bodies2D = currentPreset2D.bodies.map { it.copy() }.toMutableList()
+        bodies3D = currentPreset2D.bodies.map { it.copy() }.toMutableList()
+        bodyCount = currentPreset2D.bodies.size
+        bodyCountCombo.value = "$bodyCount Ciała"
         simulationSpeed = 1.0
         speedSlider.value = 1.0
 
@@ -400,11 +402,13 @@ class BodySimulator : Application() {
 
     private fun updateSimulation(deltaTime: Double) {
         calculateNewPositions(deltaTime)
+        val bodies = if (is3D) bodies3D else bodies2D
         bodies.forEach { it.addToTrajectory() }
     }
 
     private fun calculateNewPositions(deltaTime: Double) {
-        val accelerations = Array(bodies.size) { DoubleArray(2) }
+        val bodies = if (is3D) bodies3D else bodies2D
+        val accelerations = Array(bodies.size) { DoubleArray(3) }
 
         for (i in bodies.indices) {
             for (j in bodies.indices) {
@@ -415,18 +419,18 @@ class BodySimulator : Application() {
 
                 val dx = body2.x - body1.x
                 val dy = body2.y - body1.y
-                val distanceSquared = dx * dx + dy * dy
+                val dz = if (is3D) body2.z - body1.z else 0.0
+                val distanceSquared = dx * dx + dy * dy + dz * dz
                 val distance = sqrt(distanceSquared)
 
-                val force = if (distanceSquared > 0.0) {
-                    G * body1.mass * body2.mass * 1e24 / distanceSquared
-                } else {
-                    0.0
-                }
+                val force =
+                    if (distanceSquared > 0.0) G * body1.mass * body2.mass * 1e24 / distanceSquared
+                    else 0.0
 
                 val acceleration = force / (body1.mass * 1e12)
                 accelerations[i][0] += acceleration * dx / distance
                 accelerations[i][1] += acceleration * dy / distance
+                accelerations[i][2] += acceleration * dz / distance
             }
         }
 
@@ -434,16 +438,23 @@ class BodySimulator : Application() {
             val body = bodies[i]
             body.accelerationX = accelerations[i][0]
             body.accelerationY = accelerations[i][1]
+            body.accelerationZ = accelerations[i][2]
 
             body.velocityX += accelerations[i][0] * deltaTime
             body.velocityY += accelerations[i][1] * deltaTime
+            body.velocityZ += accelerations[i][2] * deltaTime
 
             body.x += body.velocityX * deltaTime
             body.y += body.velocityY * deltaTime
+            body.z += body.velocityZ * deltaTime
         }
     }
 
     private fun drawBodies() {
+        if (is3D) renderer3D.render3DFrame(bodies3D) else drawBodies2D()
+    }
+
+    private fun drawBodies2D() {
         val gc = canvas.graphicsContext2D
 
         gc.fill = if (isLightTheme) Color.WHITE else Color.BLACK
@@ -451,87 +462,47 @@ class BodySimulator : Application() {
 
         val radius = 10.0
 
-        for (body in bodies) {
+        for (body in bodies2D) {
             gc.stroke = body.color
             gc.lineWidth = 1.0
 
             for (i in 1..<body.trajectory.size) {
-                val prev = body.trajectory[i - 1]
-                val curr = body.trajectory[i]
-                gc.strokeLine(prev.first, prev.second, curr.first, curr.second)
+                val previous = body.trajectory[i - 1]
+                val current = body.trajectory[i]
+                gc.strokeLine(previous.first, previous.second, current.first, current.second)
             }
         }
 
-        for (body in bodies) {
+        for (body in bodies2D) {
 
             // Vector arrows:
             val scale = 1.5
 
             val totalVelocity = sqrt(body.velocityX.pow(2) + body.velocityY.pow(2))
-            if (totalVelocity > 0) {
-                drawArrow(
-                    gc,
-                    body.x,
-                    body.y,
-                    body.x + body.velocityX * scale,
-                    body.y + body.velocityY * scale,
-                    body.color,
-                    radius
+            if (totalVelocity > 0)
+                drawArrow(gc,
+                    body.x, body.y,
+                    body.x + body.velocityX * scale, body.y + body.velocityY * scale,
+                    body.color, radius
                 )
-            }
 
             val totalAcceleration = sqrt(body.accelerationX.pow(2) + body.accelerationY.pow(2))
-            if (totalAcceleration > 0) {
-                drawArrow(
-                    gc,
-                    body.x,
-                    body.y,
-                    body.x + body.accelerationX * scale,
-                    body.y + body.accelerationY * scale,
-                    if (isLightTheme) Color.BLACK else Color.WHITE,
-                    radius
+            if (totalAcceleration > 0)
+                drawArrow(gc,
+                    body.x, body.y,
+                    body.x + body.accelerationX * scale, body.y + body.accelerationY * scale,
+                    if (isLightTheme) Color.BLACK else Color.WHITE, radius
                 )
-            }
 
-            gc.fill = body.color
-            gc.fillOval(body.x - radius, body.y - radius, radius * 2, radius * 2)
-            gc.stroke = if (isLightTheme) Color.BLACK else Color.WHITE
-            gc.lineWidth = 2.0
-            gc.strokeOval(body.x - radius, body.y - radius, radius * 2, radius * 2)
+            gc.apply {
+                fill = body.color
+                fillOval(body.x - radius, body.y - radius, radius * 2, radius * 2)
+                stroke = if (isLightTheme) Color.BLACK else Color.WHITE
+                lineWidth = 2.0
+                strokeOval(body.x - radius, body.y - radius, radius * 2, radius * 2)
+            }
         }
     }
-}
-
-private fun drawArrow(
-    gc: GraphicsContext,
-    startX: Double,
-    startY: Double,
-    endX: Double,
-    endY: Double,
-    color: Color,
-    shift: Double
-) {
-    val angle = atan2(endY - startY, endX - startX)
-
-    val shiftedStartX = startX + shift * cos(angle)
-    val shiftedStartY = startY + shift * sin(angle)
-    val shiftedEndX = endX + shift * cos(angle)
-    val shiftedEndY = endY + shift * sin(angle)
-
-    gc.stroke = color
-    gc.lineWidth = 2.0
-    gc.strokeLine(shiftedStartX, shiftedStartY, shiftedEndX, shiftedEndY)
-
-    val arrowHeadSize = 5.0
-
-    val x1 = shiftedEndX - arrowHeadSize * cos(angle - PI / 6)
-    val y1 = shiftedEndY - arrowHeadSize * sin(angle - PI / 6)
-
-    val x2 = shiftedEndX - arrowHeadSize * cos(angle + PI / 6)
-    val y2 = shiftedEndY - arrowHeadSize * sin(angle + PI / 6)
-
-    gc.strokeLine(shiftedEndX, shiftedEndY, x1, y1)
-    gc.strokeLine(shiftedEndX, shiftedEndY, x2, y2)
 }
 
 
